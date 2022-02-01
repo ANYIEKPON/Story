@@ -1,1 +1,202 @@
 there is always a first time to everything
+
+
+
+/*------------------------
+ * Imports
+ * ------------------------*/
+imports.searchPath.push( imports.ui.appletManager.appletMeta["sports-update@sagarmatha.org"].path );
+
+const Soup = imports.gi.Soup;
+const Json = imports.json_parse;
+const GLib = imports.gi.GLib;
+
+const InternationalTeams = new Array("Australia","India","England","Pakistan","South Africa","New Zealand",
+		"Sri Lanka","West Indies","Zimbabwe","Bangladesh","Kenya","Ireland","Canada","Netherlands",
+		"Scotland","Afghanistan","USA","Nepal");
+const IPLTeams = new Array("Chennai Super Kings","Delhi Daredevils","Kings XI Punjab","Kolkata Knight Riders",
+		"Mumbai Indians","Rajasthan Royals","Royal Challengers Bangalore","Sunrisers Hyderabad");
+
+function LiveScore(a_params){
+
+	this.apiRoot=undefined;
+	this.icon=undefined;
+	this.displayCancelled = undefined;
+	this.displayDelayed = undefined;
+	this.displayFinal = undefined;
+	this.displaySchedule = undefined;
+	this.sport= undefined;
+
+	this.callbacks={
+		onError:undefined,
+		onScoreUpdate:undefined
+	};
+
+	if (a_params != undefined){
+		
+		this.apiRoot = a_params.apiRoot;
+		this.icon = a_params.icon;
+		this.displayCancelled = a_params.displayCancelled;
+		this.displayDelayed = a_params.displayDelayed;
+		this.displayFinal = a_params.displayFinal;
+		this.displaySchedule = a_params.displaySchedule;
+		this.sport = a_params.sport;
+		
+		if (a_params.callbacks!=undefined){
+			this.callbacks.onError=a_params.callbacks.onError;
+			this.callbacks.onScoreUpdate=a_params.callbacks.onScoreUpdate;
+		}
+	}
+	try {
+		this.httpSession = new Soup.SessionAsync();
+	} catch (e){ throw 'LiveScore: Creating SessionAsync failed: ' + e; }
+	
+	try {
+		Soup.Session.prototype.add_feature.call(this.httpSession, new Soup.ProxyResolverDefault());
+	} catch (e){ throw 'LiveScore: Adding ProxyResolverDefault failed: ' + e; }
+}
+
+LiveScore.prototype.initialised = function(){
+	
+	return this.apiRoot != undefined 
+		&& this.callbacks.onError != undefined 
+		&& this.callbacks.onScoreUpdate != undefined;
+}
+
+LiveScore.prototype.loadScores = function(){
+	var url = this.apiRoot;
+	var sport = this.sport;
+	
+	let this_ = this;
+	let message = Soup.Message.new('GET', url);	
+	this.httpSession.queue_message(message, function(session,message){this_.onHandleResponse(session,message)});	
+}
+
+LiveScore.prototype.onHandleResponse = function(session, message) {
+	
+	if (message.status_code !== 200) {
+		this.callbacks.onError(message.status_code);
+		return;
+	}
+	
+	var response = this.parseResponse(message.response_body.data);
+
+	try {
+		if (this.callbacks.onScoreUpdate != undefined){			
+			this.callbacks.onScoreUpdate(response);
+		}else{
+			global.log("sports-update@sagarmatha.org : exception onScoreUpdate callback NOT FOUND!");
+		}
+	} catch (e){
+		global.log("sports-update@sagarmatha.org : exception triggering score update "  + e);
+	}
+}
+
+LiveScore.prototype.parseResponse = function(response){
+	
+	var scorelist = [];
+	
+	try {
+		if(this.sport == "cricket_international" || this.sport == "cricket_ipl" || this.sport == "cricket"){
+			
+			this.parseCricketResponse(response, this.sport);			
+		}
+		else{
+			
+			var splits = response.split("&");
+	
+			var count = 1;
+			var leftText = "_left";
+			var rightText = "_right";
+			var urlText = "_url";
+			
+			while(response.indexOf(leftText + count) !== -1){
+				count = count + 1;		
+			}
+			
+			for(var i = 1; i < count; i++){	
+				
+				var summary = "";
+				var type = 1;
+				var url = "";
+				var details = [];
+				
+				for(var j = 0; j < splits.length; j++){
+			
+					if(splits[j].indexOf(leftText + i) !== -1){
+						
+						var tempSummary = splits[j];
+						
+						var equalpos = tempSummary.indexOf("=");
+						tempSummary = tempSummary.substring(equalpos + 1);
+						tempSummary = tempSummary.replace("^","");
+						summary = decodeURIComponent(tempSummary);
+						
+						if(summary.indexOf("FINAL") !== -1 || summary.indexOf("Full-time") !== -1){
+							type = 2;
+						}
+						else if(summary.indexOf("CANCELLED") !== -1){
+							type = 4;							
+						}
+						else if(summary.indexOf("DELAYED") !== -1 || summary.indexOf("Postponed") !== -1){
+							type = 3;
+						}
+						else if(summary.indexOf("AM") !== -1 || summary.indexOf("PM") !== -1)
+							type = 5;
+					}	
+					
+					if(splits[j].indexOf(urlText + i)  !== -1 ){
+						
+						var tempUrl = splits[j];
+						
+						var equalpos = tempUrl.indexOf("=");
+						tempUrl = tempUrl.substring(equalpos + 1);
+						tempUrl = tempUrl.replace("^","");
+						url = decodeURIComponent(tempUrl);
+					}
+	
+					if(splits[j].indexOf(rightText + i) !== -1 && splits[j].indexOf("_count=") == -1){
+						
+						var tempDetails = splits[j];
+						
+						var equalpos = tempDetails.indexOf("=");
+						tempDetails = tempDetails.substring(equalpos + 1);
+						tempDetails = tempDetails.replace("^","");
+						tempDetails = decodeURIComponent(tempDetails);
+												
+						details[details.length] = tempDetails;
+					}					
+				}
+				
+				var leaderboardStatus = false;
+				
+				if(details.length > 0){
+					if(details[0].indexOf("Complete") !== -1){
+						leaderboardStatus = true;
+					}
+				}
+				
+				if((summary.indexOf("FINAL") !== -1 || summary.indexOf("Full-time") !== -1 || leaderboardStatus) && this.displayFinal){				
+					scorelist[scorelist.length] = 
+						{Summary: summary, Type: type, Details: details, Url: url, Icon: this.icon};
+				}
+				else if(summary.indexOf("CANCELLED") !== -1 && this.displayCancelled){
+					scorelist[scorelist.length] = 
+						{Summary: summary, Type: type, Details: details, Url: url, Icon: this.icon};
+				}
+				else if((summary.indexOf("DELAYED") !== -1 || summary.indexOf("Postponed") !== -1) && this.displayDelayed){
+					scorelist[scorelist.length] = 
+						{Summary: summary, Type: type, Details: details, Url: url, Icon: this.icon};
+				}
+				else if((summary.indexOf("AM") !== -1 || summary.indexOf("PM") !== -1) && this.displaySchedule){
+					
+					/*var tempSum = summary;
+					var bracketStart = tempSum.indexOf("(");
+					var bracketEnd = tempSum.indexOf(")");
+					var summarybit = "";
+					
+					var summarybit = summary.substring(0,bracketStart - 1);
+					
+					var time = tempSum.substring(bracketStart + 1, bracketEnd);
+					time = time.replace(" ET", "");
+					var PM = false;
